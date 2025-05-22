@@ -90,6 +90,18 @@ class GaussianModel:
         new_gs.max_radii2D = torch.zeros((new_gs.get_xyz.shape[0]), device="cuda")
         return new_gs
 
+    def __add__(self, gs):
+        new_gs = GaussianModel(self.max_sh_degree, fea_dim=self.fea_dim, with_motion_mask=self.with_motion_mask)
+        new_gs._xyz = nn.Parameter(torch.cat([self._xyz, gs._xyz], dim=0))
+        new_gs._features_dc = nn.Parameter(torch.cat([self._features_dc, gs._features_dc], dim=0))
+        new_gs._features_rest = nn.Parameter(torch.cat([self._features_rest, torch.zeros(len(gs._features_rest), *self._features_rest.shape[1:], device="cuda")], dim=0))
+        new_gs._scaling = nn.Parameter(torch.cat([self._scaling, gs._scaling], dim=0))
+        new_gs._rotation = nn.Parameter(torch.cat([self._rotation, gs._rotation], dim=0))
+        new_gs._opacity = nn.Parameter(torch.cat([self._opacity, gs._opacity], dim=0))
+        # new_gs.feature = nn.Parameter(torch.cat([self.feature, gs.feature], dim=0))
+        # new_gs.max_radii2D = torch.cat([self.max_radii2D, gs.max_radii2D], dim=0)
+        return new_gs
+
     @property
     def motion_mask(self):
         if self.with_motion_mask:
@@ -359,6 +371,19 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+    
+    def prune_cov(self):
+        mask = (torch.exp(self._scaling) > 0.2*torch.exp(self._scaling).max()).any(dim=-1)
+        # print(f"masking {mask.sum().cpu().item()}/{len(mask)}")
+
+        self._xyz = self._xyz[~mask]
+        self._features_dc = self._features_dc[~mask]
+        self._features_rest = self._features_rest[~mask]
+        self._opacity = self._opacity[~mask]
+        self._scaling = self._scaling[~mask]
+        self._rotation = self._rotation[~mask]
+
+        return mask
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}

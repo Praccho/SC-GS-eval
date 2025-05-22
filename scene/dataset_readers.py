@@ -125,7 +125,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, msk_folder=
     cam_infos = []
     num_frames = len(cam_extrinsics)
     for idx, key in enumerate(cam_extrinsics):
-        potential_extensions = ['png', 'jpg', 'jpeg', 'PNG', 'JPG', 'JPEG']
         sys.stdout.write('\r')
         # the exact output you're looking for:
         sys.stdout.write(
@@ -155,10 +154,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, msk_folder=
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
-        if not os.path.exists(image_path):
-            while not os.path.exists(image_path):
-                image_path = image_path.split(".")[0] + f'.{potential_extensions.pop(0)}'
-                print(f'Extension try: {image_path.split(".")[-1]}')
         image = Image.open(image_path)
 
         if msk_folder is not None and image.size[-1] == 3:
@@ -166,8 +161,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, msk_folder=
             mask = Image.open(msk_path)
             image = np.concatenate([np.asarray(image), np.asarray(mask)], axis=-1)
             image = Image.fromarray(image)
-        
-        image_name = ''.join(char for char in image_name if char.isdigit())
+
         fid = int(image_name) / (num_frames - 1)
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name, width=width, height=height, fid=fid)
@@ -870,13 +864,17 @@ def readPlenopticVideoDataset(path, eval, num_images, hold_id=[0]):
 def readCMUInfo(path, split):
     camera_infos = []
     md = json.load(open(f"{path}/{split}_meta.json", 'r'))
-    num_timesteps = 20  # len(md['fn'])
+    num_timesteps = len(md['fn'])
+    print(f"ATTENTION: read in {num_timesteps} timesteps")
     for t in range(num_timesteps):
         for c in range(len(md['fn'][t])):
             w, h, k, w2c = md['w'], md['h'], md['k'][t][c], md['w2c'][t][c]
             image_path = f"{path}/ims/"
             image_name = md['fn'][t][c]
-            im = np.array(copy.deepcopy(Image.open(f"{path}/ims/{image_name}")))
+            try:
+                im = np.array(copy.deepcopy(Image.open(f"{path}/ims/{image_name}")))
+            except:
+                continue
             im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
             try:
                 seg = np.array(copy.deepcopy(Image.open(f"{path}/seg/{image_name.replace('.jpg', '.png')}"))).astype(np.float32)
@@ -916,7 +914,15 @@ def readCMUSceneInfo(path, apply_cam_norm=True, recenter_by_pcl=True):
     train_cam_infos = readCMUInfo(path, 'train')
     print('Reading Test Camera')
     test_cam_infos = readCMUInfo(path, 'test')
-    nerf_normalization = getNerfppNorm(train_cam_infos, apply=apply_cam_norm)
+
+    combined = train_cam_infos + test_cam_infos
+    print("pre nerf norm train:", train_cam_infos[0])
+    print("pre nerf norm test:", test_cam_infos[0])
+    nerf_normalization = getNerfppNorm(combined, apply=apply_cam_norm)
+    train_cam_infos[:] = combined[:len(train_cam_infos)]
+    test_cam_infos[:] = combined[len(train_cam_infos):]
+    print("post nerf norm train:", train_cam_infos[0])
+    print("post nerf norm test:", test_cam_infos[0])
     
     if recenter_by_pcl:
         ply_path = os.path.join(path, 'points3D_recenter.ply')
@@ -934,7 +940,14 @@ def readCMUSceneInfo(path, apply_cam_norm=True, recenter_by_pcl=True):
             xyz /= nerf_normalization["apply_radius"]
         if recenter_by_pcl:
             pcl_center = xyz.mean(axis=0)
+            # print("pre translate: ")
+            # print("trains cams: ", train_cam_infos[0])
+            # print("test cams: ", test_cam_infos[0])
             translate_cam_info(train_cam_infos, - pcl_center)
+            translate_cam_info(test_cam_infos, - pcl_center)
+            # print("post translate: ")
+            # print("trains cams: ", train_cam_infos[0])
+            # print("test cams: ", test_cam_infos[0])
             xyz -= pcl_center
             np.savez(adj_path, translate=-pcl_center)
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(
@@ -943,6 +956,7 @@ def readCMUSceneInfo(path, apply_cam_norm=True, recenter_by_pcl=True):
     else:
         translate = np.load(adj_path + '.npz')['translate']
         translate_cam_info(train_cam_infos, translate=translate)
+        translate_cam_info(test_cam_infos, translate=translate)
     pcd = fetchPly(ply_path)
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,

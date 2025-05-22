@@ -225,7 +225,7 @@ class GUI:
         self.view_animation = True
         self.n_rings_N = 2
         # Use ARAP or Generative Model to Deform
-        self.deform_mode = "arap_from_init"
+        self.deform_mode = "arap_iterative"
         self.should_render_customized_trajectory = False
         self.should_render_customized_trajectory_spiral = False
 
@@ -253,14 +253,7 @@ class GUI:
             trajectory = None
 
         self.animate_init_values = values
-        if self.deform.deform.is_scene_static:
-            nodes = self.deform.deform.nodes[..., :3]
-            scale = torch.norm(nodes.max(0).values - nodes.min(0).values)
-            node_radius = scale / 20
-            print(f'Static scene node radius: {node_radius}')
-        else:
-            node_radius = self.deform.deform.node_radius.detach()
-        self.animate_tool = LapDeform(init_pcl=pcl, K=4, trajectory=trajectory, node_radius=node_radius)
+        self.animate_tool = LapDeform(init_pcl=pcl, K=4, trajectory=trajectory, node_radius=self.deform.deform.node_radius.detach())
         self.keypoint_idxs = []
         self.keypoint_3ds = []
         self.keypoint_labels = []
@@ -691,27 +684,6 @@ class GUI:
                     )
                     dpg.bind_item_theme("_button_save_kpt", theme_button)
 
-                    def callback_load_ckpt(sender, app_data):
-                        from utils.pickle_utils import load_obj
-                        if not hasattr(self, 'deform_kpt_files') or self.deform_kpt_files is None:
-                            self.deform_kpt_files = sorted([file for file in os.listdir(os.path.join(self.args.model_path)) if file.startswith('deform_keypoints') and file.endswith('.pickle')])
-                            self.deform_kpt_files_idx = 0
-                        else:
-                            self.deform_kpt_files_idx = (self.deform_kpt_files_idx + 1) % len(self.deform_kpt_files)
-                        print(f'Load {self.deform_kpt_files[self.deform_kpt_files_idx]}')
-                        deform_keypoints, self.animation_time = load_obj(os.path.join(self.args.model_path, self.deform_kpt_files[self.deform_kpt_files_idx]))
-                        self.is_animation = True
-                        self.animation_initialize()
-                        animated_pcl, quat, ani_d_scaling = self.animate_tool.deform_arap(handle_idx=deform_keypoints.get_kpt_idx(), handle_pos=deform_keypoints.get_deformed_kpt_np(), return_R=True)
-                        self.animation_trans_bias = animated_pcl - self.animate_tool.init_pcl
-                        self.animation_rot_bias = quat
-                        self.animation_scaling_bias = ani_d_scaling
-                        self.update_control_point_overlay()
-                    dpg.add_button(
-                        label="ld_kpt", tag="_button_load_kpt", callback=callback_load_ckpt
-                    )
-                    dpg.bind_item_theme("_button_load_kpt", theme_button)
-
                 with dpg.group(horizontal=True):
                     def callback_change_deform_mode(sender, app_data):
                         self.deform_mode = app_data
@@ -757,8 +729,7 @@ class GUI:
                 up = self.cam.rot.as_matrix()[:3, 1]
                 forward = self.cam.rot.as_matrix()[:3, 2]
                 rotvec_z = forward * np.radians(-0.05 * dx)
-                rotvec_y = up * np.radians(-0.05 * dy)
-                rot_mat = (R.from_rotvec(rotvec_z)).as_matrix() @ (R.from_rotvec(rotvec_y)).as_matrix()
+                rot_mat = (R.from_rotvec(rotvec_z)).as_matrix()
                 self.deform_keypoints.set_rotation_delta(rot_mat)
             else:
                 delta = 0.00010 * self.cam.rot.as_matrix()[:3, :3] @ np.array([dx, -dy, 0])
@@ -898,7 +869,7 @@ class GUI:
             dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Left, callback=callback_keypoint_add)
 
         dpg.create_viewport(
-            title="SC-GS",
+            title="Gaussian3D",
             width=self.W + 600,
             height=self.H + (45 if os.name == "nt" else 0),
             resizable=False,
@@ -1349,7 +1320,7 @@ class GUI:
                 if self.iteration_node_rendering % self.opt.opacity_reset_interval == 0 or (
                         self.dataset.white_background and self.iteration_node_rendering == self.opt.densify_from_iter):
                     self.deform.deform.as_gaussians.reset_opacity()
-            elif self.iteration_node_rendering == self.opt.iterations_node_sampling:
+            elif self.iteration_node_rendering == self.opt.iterations_node_sampling: # TODO: seems like an important point
                 # Downsampling nodes for sparse control
                 # Strategy 1: Directly use the original gs as nodes
                 # Strategy 2: Sampling in the hyper space across times
@@ -1368,6 +1339,7 @@ class GUI:
                     print('Reset the optimizer of the deform model.')
                     self.deform.train_setting(self.opt)
                 elif strategy == 'samp_hyper':
+                    print("DOING HYPER SHIT")
                     original_gaussians: GaussianModel = self.deform.deform.as_gaussians
                     time_num = 16
                     t_samp = torch.linspace(0, 1, time_num).cuda()
@@ -1689,7 +1661,7 @@ class GUI:
             traj_dir = os.path.join(self.args.model_path, 'trajectory')
         # Read deformation files for animation presentation
         deform_keypoint_files = [None] + sorted([file for file in os.listdir(os.path.join(self.args.model_path)) if file.startswith('deform_keypoints') and file.endswith('.pickle')])
-        rendering_animation = len(deform_keypoint_files) > 1
+        rendering_animation = len(deform_keypoint_files) > 0
         if rendering_animation:
             deform_keypoints, self.animation_time = load_obj(os.path.join(self.args.model_path, deform_keypoint_files[1]))
             self.animation_initialize()
@@ -1862,7 +1834,7 @@ def prepare_output_and_logger(args):
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok=True)
-    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+    with open(os.path.join(args.model_path, " _args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
 
     # Create Tensorboard writer

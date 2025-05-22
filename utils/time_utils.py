@@ -1224,6 +1224,9 @@ class ControlNodeWarp(nn.Module):
             return_dict['d_color'] = d_color
         else:
             return_dict['d_color'] = None
+        
+        return_dict['nn_weight'] = nn_weight
+        return_dict['nn_idx'] = nn_idx
 
         self.reg_loss = 0.
         lambda_arap = landmark_interpolate(landmarks=self.lambda_arap_landmarks, steps=self.lambda_arap_steps, step=iteration)
@@ -1258,10 +1261,10 @@ class ControlNodeWarp(nn.Module):
     @property
     def as_gaussians_visualization(self):
         from scene.gaussian_model import GaussianModel, BasicPointCloud
-        pcd = BasicPointCloud(points=self.nodes[..., :3].detach(), colors=self.nodes_color_visualization, normals=self.nodes[..., :3].detach())
+        pcd = BasicPointCloud(points=self.nodes[..., :3].detach(), colors=self.nodes_color_visualization[..., :3], normals=self.nodes[..., :3].detach())
         gs = GaussianModel(sh_degree=0, with_motion_mask=False)
         gs.create_from_pcd(pcd=pcd, spatial_lr_scale=0., print_info=False)
-        gs._scaling.data = torch.log(1e-2 * torch.ones_like(gs._scaling))
+        gs._scaling.data = torch.log(5e-3 * torch.ones_like(gs._scaling))
         gs._opacity.data = 1e3 * torch.ones_like(gs._opacity)
         return gs
     
